@@ -1,9 +1,6 @@
 name: Daily sign in Baha
 
 on:
-  schedule:
-    - cron: "0 16 * * *"   # 台灣 00:00
-    - cron: "0 4 * * *"    # 台灣 12:00
   workflow_dispatch:
 
 permissions:
