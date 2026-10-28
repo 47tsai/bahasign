@@ -62,11 +62,14 @@ resp_json = requests.post('https://www.gamer.com.tw/ajax/signin.php', headers = 
 
 # 4. 判斷訊息格式
 discord_msg = ""
+send_notification = True
 
 if 'error' in resp_json:
     err_msg = resp_json['error']['message']
     if "今天您已經簽到過了喔" in err_msg or "今日已簽到" in err_msg:
         discord_msg = "✅ **巴哈姆特 今日已簽到**"
+        # 已簽到代表當日成功通知應已在首次簽到時送出，避免重複通知。
+        send_notification = False
     else:
         discord_msg = f"❌ **巴哈簽到失敗：{err_msg}**"
 
@@ -77,8 +80,10 @@ elif 'data' in resp_json:
 else:
     discord_msg = "❌ **巴哈簽到失敗：發生未知錯誤**"
 
-# 5. 發送 Discord 通知（Embed）
-send_discord_msg(discord_msg)
+# 5. 發送 Discord 通知
+# 新簽到成功時通知；「今日已簽到」不重複通知；失敗仍照常通知。
+if send_notification:
+    send_discord_msg(discord_msg)
 print(discord_msg)
 
 # 6. 更新 README 紀錄
