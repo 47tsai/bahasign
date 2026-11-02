@@ -58,11 +58,9 @@ def sign_in():
     if not account or not password:
         raise SignInError("缺少帳號或密碼環境變數")
 
-    session = requests.Session()
-
     # 1. 登入
     try:
-        login_response = session.post(
+        login_response = requests.post(
             LOGIN_URL,
             headers={
                 "User-Agent": USER_AGENT,
@@ -85,7 +83,7 @@ def sign_in():
 
     # 2. 取得 CSRF Token
     try:
-        token_response = session.get(
+        token_response = requests.get(
             TOKEN_URL,
             headers=request_headers(cookie),
             timeout=TIMEOUT,
@@ -102,7 +100,7 @@ def sign_in():
 
     # 3. 執行簽到。非 JSON 回應不能視為成功。
     try:
-        signin_response = session.post(
+        signin_response = requests.post(
             SIGNIN_URL,
             headers=request_headers(cookie),
             data={"action": 1, "token": token},
