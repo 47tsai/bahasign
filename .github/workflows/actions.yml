@@ -33,7 +33,7 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
           set -o pipefail
-          python bahasign.py | tee result.txt
+          python -u bahasign.py 2>&1 | tee result.txt
 
       - name: Update README
         if: always()
@@ -42,9 +42,9 @@ jobs:
           RESULT=$(grep -E '^(✅|❌)' result.txt 2>/dev/null | tail -n 1 || true)
 
           if echo "$RESULT" | grep -q '^✅'; then
-            STATUS="✅ 簽到成功"
+            STATUS="$RESULT"
           elif echo "$RESULT" | grep -q '^❌'; then
-            STATUS="❌ 簽到失敗"
+            STATUS="$RESULT"
           else
             STATUS="⚠️ 執行異常，請查看 Actions 日誌"
           fi
@@ -52,22 +52,22 @@ jobs:
           cat > README.md <<EOF
           # 巴哈姆特自動簽到
 
-          | 帳號 | 上次簽到時間 | 簽到結果 |
+          | 帳號 | 上次執行時間 | 執行結果 |
           | --- | --- | --- |
           | 巴哈姆特帳號 | $TIME | $STATUS |
 
           > 此頁面由 GitHub Actions 自動更新。
           EOF
 
-      - name: Save log
+      - name: Save status
         if: always()
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add README.md
-          git commit -m "Auto Sign-in Status: $(TZ='Asia/Taipei' date '+%Y/%m/%d %H:%M:%S')" || exit 0
+          git commit -m "Update sign-in status: $(TZ='Asia/Taipei' date '+%Y/%m/%d %H:%M:%S')" || exit 0
           git push
 
-      - name: Fail workflow if sign-in failed
+      - name: Mark workflow failed when sign-in or notification failed
         if: steps.sign_in.outcome == 'failure'
         run: exit 1
