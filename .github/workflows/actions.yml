@@ -32,19 +32,21 @@ jobs:
           USER_PASSWORD: ${{ secrets.PASSWORD }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
+          set -o pipefail
           python bahasign.py | tee result.txt
 
       - name: Update README
+        if: always()
         run: |
           TIME=$(TZ='Asia/Taipei' date '+%Y-%m-%d %H:%M:%S')
-          RESULT=$(grep -E '^(✅|❌)' result.txt | tail -n 1 || true)
+          RESULT=$(grep -E '^(✅|❌)' result.txt 2>/dev/null | tail -n 1 || true)
 
           if echo "$RESULT" | grep -q '^✅'; then
             STATUS="✅ 簽到成功"
           elif echo "$RESULT" | grep -q '^❌'; then
             STATUS="❌ 簽到失敗"
           else
-            STATUS="⚠️ 執行完成，結果未知"
+            STATUS="⚠️ 執行異常，請查看 Actions 日誌"
           fi
 
           cat > README.md <<EOF
@@ -58,6 +60,7 @@ jobs:
           EOF
 
       - name: Save log
+        if: always()
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
