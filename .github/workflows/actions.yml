@@ -68,8 +68,15 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add README.md .last-success-notification
-          git commit -m "Update sign-in status: $(TZ='Asia/Taipei' date '+%Y/%m/%d %H:%M:%S')" || exit 0
+          git add README.md
+          if [ -f .last-success-notification ]; then
+            git add .last-success-notification
+          fi
+          if git diff --cached --quiet; then
+            echo "No status changes to commit."
+            exit 0
+          fi
+          git commit -m "Update sign-in status: $(TZ='Asia/Taipei' date '+%Y/%m/%d %H:%M:%S')"
           git push
 
       - name: Mark workflow failed when sign-in or notification failed
