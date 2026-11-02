@@ -1,10 +1,9 @@
-import json
 import os
-import secrets
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
-import pyotp
 import requests
 
 
@@ -16,16 +15,28 @@ SIGNIN_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 TIMEOUT = (10, 25)
+NOTIFICATION_STATE = Path(".last-success-notification")
 
 
 class SignInError(Exception):
-    """A known failure in the sign-in flow."""
+    pass
 
 
-def send_discord(content):
+def taipei_today():
+    return datetime.now(ZoneInfo("Asia/Taipei")).date().isoformat()
+
+
+def success_already_notified():
+    try:
+        return NOTIFICATION_STATE.read_text(encoding="utf-8").strip() == taipei_today()
+    except FileNotFoundError:
+        return False
+
+
+def send_discord(message, success):
     webhook = os.getenv("DISCORD_WEBHOOK")
     if not webhook:
-        print("⚠️ Discord 通知未送出：未設定 DISCORD_WEBHOOK", file=sys.stderr)
+        print("⚠️ 未設定 DISCORD_WEBHOOK", file=sys.stderr)
         return False
 
     try:
@@ -35,10 +46,10 @@ def send_discord(content):
                 "username": "簽到",
                 "embeds": [{
                     "title": "巴哈姆特簽到通知",
-                    "description": content,
-                    "color": 0x00FF99 if content.startswith("✅") else 0xFF5555,
+                    "description": message,
+                    "color": 0x00FF99 if success else 0xFF5555,
                     "footer": {"text": "Auto Check-in Bot"},
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": datetime.now(ZoneInfo("UTC")).isoformat(),
                 }],
             },
             timeout=TIMEOUT,
@@ -56,14 +67,10 @@ def send_discord(content):
 def sign_in():
     account = os.getenv("USER_ACCOUNT")
     password = os.getenv("USER_PASSWORD")
-    totp_secret = os.getenv("TOTP_SECRET")
-
     if not account or not password:
-        raise SignInError("缺少帳號或密碼環境變數")
-    if not totp_secret:
-        raise SignInError("缺少 TOTP_SECRET，請確認 GitHub Repository Secret")
+        raise SignInError("缺少 USER_ACCOUNT 或 USER_PASSWORD")
 
-    # 1. 依照原作者流程，使用帳號、密碼及 TOTP 登入。
+    # 沿用原本不需要 TOTP 的登入方式。
     try:
         login_response = requests.post(
             LOGIN_URL,
@@ -74,7 +81,6 @@ def sign_in():
             data={
                 "uid": account,
                 "passwd": password,
-                "twoStepAuth": pyotp.TOTP(totp_secret).now(),
                 "vcode": "7045",
             },
             timeout=TIMEOUT,
@@ -87,14 +93,14 @@ def sign_in():
 
     rune = login_response.cookies.get("BAHARUNE")
     if not rune:
-        # 不輸出登入回應內容，避免意外洩漏帳號或驗證資訊。
-        raise SignInError("登入失敗，未取得 BAHARUNE Cookie，請檢查帳密及 TOTP_SECRET")
+        raise SignInError(
+            "登入失敗，未取得 BAHARUNE Cookie，請確認帳密或巴哈登入驗證機制"
+        )
 
-    # 2. 原作者的簽到 API 不需要另外取得 CSRF Token。
-    #    隨機 Token 同時放入 Header 與 Cookie。
-    csrf_token = secrets.token_hex(8)
+    # 使用新版簽到 API，不呼叫舊版 get_csrf_token.php。
+    csrf_token = __import__("secrets").token_hex(8)
     try:
-        signin_response = requests.post(
+        response = requests.post(
             SIGNIN_URL,
             headers={
                 "User-Agent": SIGNIN_USER_AGENT,
@@ -104,18 +110,18 @@ def sign_in():
             data={"action": 1},
             timeout=TIMEOUT,
         )
-        signin_response.raise_for_status()
+        response.raise_for_status()
     except requests.RequestException as exc:
         raise SignInError(
             f"簽到 API 請求失敗（{type(exc).__name__}: {exc}）"
         ) from exc
 
     try:
-        payload = signin_response.json()
+        payload = response.json()
     except ValueError as exc:
-        content_type = signin_response.headers.get("Content-Type", "unknown")
+        content_type = response.headers.get("Content-Type", "unknown")
         raise SignInError(
-            f"簽到 API 回傳非 JSON（HTTP {signin_response.status_code}，"
+            f"簽到 API 回傳非 JSON（HTTP {response.status_code}，"
             f"Content-Type: {content_type}）"
         ) from exc
 
@@ -129,7 +135,11 @@ def sign_in():
         else:
             message = str(error)
 
-        if "今天您已經簽到過了喔" in message or "今日已簽到" in message:
+        if any(term in message for term in (
+            "今天您已經簽到過了喔",
+            "今日已簽到",
+            "已經簽到",
+        )):
             return "already_signed", "✅ **巴哈姆特 今日已簽到**"
 
         raise SignInError(f"巴哈姆特回報：{message}")
@@ -140,35 +150,36 @@ def sign_in():
 def main():
     try:
         status, message = sign_in()
-    except SignInError as exc:
-        message = f"❌ **巴哈姆特簽到失敗：{exc}**"
-        print(message)
-        if not send_discord(message):
-            print(
-                "❌ 失敗通知未能送達 Discord，請查看 GitHub Actions 日誌",
-                file=sys.stderr,
-            )
-        return 1
     except Exception as exc:
-        message = (
-            "❌ **巴哈姆特簽到發生未預期錯誤："
-            f"{type(exc).__name__}: {exc}**"
-        )
-        print(message)
-        if not send_discord(message):
-            print(
-                "❌ 失敗通知未能送達 Discord，請查看 GitHub Actions 日誌",
-                file=sys.stderr,
-            )
+        message = f"❌ **巴哈姆特簽到失敗：{type(exc).__name__}: {exc}**"
+
+        # 成功通知已送達後，當天不再發送任何訊息。
+        if success_already_notified():
+            print(message)
+            print("ℹ️ 今日成功通知已送達，依設定不再發送 Discord 訊息")
+        else:
+            print(message)
+            if not send_discord(message, success=False):
+                print("❌ 失敗通知未送達 Discord", file=sys.stderr)
         return 1
 
     print(message)
 
-    # 已簽到不重複推播；新簽到成功才發送成功通知。
-    if status == "success" and not send_discord(message):
-        print("⚠️ 簽到成功，但 Discord 通知未送達", file=sys.stderr)
+    # 新簽到成功與「今日已簽到」都代表當日已完成。
+    # 只有 Discord 確認送達後才寫入狀態，避免通知失敗後永久漏報。
+    if success_already_notified():
+        print("ℹ️ 今日成功通知已送達，不再發送 Discord 訊息")
+        return 0
+
+    if not send_discord(message, success=True):
+        print(
+            "❌ 簽到已成功，但成功通知未送達；保留重試機會",
+            file=sys.stderr,
+        )
         return 2
 
+    NOTIFICATION_STATE.write_text(taipei_today() + "\n", encoding="utf-8")
+    print("✅ 已記錄今日成功通知，當天後續不再發送 Discord 訊息")
     return 0
 
 
