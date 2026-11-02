@@ -1,4 +1,5 @@
 import os
+import secrets
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -98,7 +99,7 @@ def sign_in():
         )
 
     # 使用新版簽到 API，不呼叫舊版 get_csrf_token.php。
-    csrf_token = __import__("secrets").token_hex(8)
+    csrf_token = secrets.token_hex(8)
     try:
         response = requests.post(
             SIGNIN_URL,
