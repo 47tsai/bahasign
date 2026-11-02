@@ -1,106 +1,177 @@
-import os, json, sys, requests
-from datetime import datetime
+import json
+import os
+import sys
+from datetime import datetime, timezone
 
-account = os.getenv('USER_ACCOUNT')
-password = os.getenv('USER_PASSWORD')
-webhook_url = os.getenv('DISCORD_WEBHOOK')
+import requests
 
-def send_discord_msg(content):
-    if not webhook_url:
-        print("Discord 發送失敗：未設定 DISCORD_WEBHOOK")
-        return
+
+LOGIN_URL = "https://api.gamer.com.tw/mobile_app/user/v3/do_login.php"
+TOKEN_URL = "https://www.gamer.com.tw/ajax/get_csrf_token.php"
+SIGNIN_URL = "https://www.gamer.com.tw/ajax/signin.php"
+USER_AGENT = "Bahadroid (https://www.gamer.com.tw/)"
+TIMEOUT = (10, 25)
+
+
+class SignInError(Exception):
+    """A known failure in the sign-in flow."""
+
+
+def send_discord(content):
+    webhook = os.getenv("DISCORD_WEBHOOK")
+    if not webhook:
+        print("⚠️ Discord 通知未送出：未設定 DISCORD_WEBHOOK", file=sys.stderr)
+        return False
+
     try:
-        response = requests.post(webhook_url, json={
-            "username": "簽到",
-            "embeds": [{
-                "title": "巴哈姆特簽到通知",
-                "description": content,
-                "color": 0xff5555 if content.startswith("❌") else 0x00ff99,
-                "footer": {"text": "Auto Check-in Bot"},
-                "timestamp": datetime.utcnow().isoformat()
-            }]
-        }, timeout=15)
+        response = requests.post(
+            webhook,
+            json={
+                "username": "簽到",
+                "embeds": [{
+                    "title": "巴哈姆特簽到通知",
+                    "description": content,
+                    "color": 0x00FF99 if content.startswith("✅") else 0xFF5555,
+                    "footer": {"text": "Auto Check-in Bot"},
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }],
+            },
+            timeout=TIMEOUT,
+        )
         response.raise_for_status()
-    except Exception as e:
-        print(f"Discord 發送失敗: {type(e).__name__}: {e}")
+        return True
+    except requests.RequestException as exc:
+        print(f"⚠️ Discord 通知發送失敗：{type(exc).__name__}: {exc}", file=sys.stderr)
+        return False
 
-def fail(message):
-    notification = f"❌ **巴哈簽到失敗：{message}**"
-    send_discord_msg(notification)
-    print(notification)
-    sys.exit(1)
 
-# 1. 登入
-try:
-    resp = requests.post('https://api.gamer.com.tw/mobile_app/user/v3/do_login.php', headers={
-        'User-Agent': 'Bahadroid (https://www.gamer.com.tw/)',
-        'Cookie': 'ckAPP_VCODE=7045'
-    }, data={
-        'uid': account,
-        'passwd': password,
-        'vcode': '7045'
-    }, timeout=20)
-    resp.raise_for_status()
-except Exception as e:
-    fail(f"登入請求異常（{type(e).__name__}: {e}）")
+def request_headers(cookie=None):
+    headers = {"User-Agent": USER_AGENT}
+    if cookie:
+        headers["Cookie"] = cookie
+    return headers
 
-rune = resp.cookies.get('BAHARUNE')
-if rune is None:
-    fail("登入失敗，請檢查帳密或兩步驟驗證")
 
-# 2. 取得 CSRF Token
-try:
-    token_resp = requests.get('https://www.gamer.com.tw/ajax/get_csrf_token.php', headers={
-        'User-Agent': 'Bahadroid (https://www.gamer.com.tw/)',
-        'Cookie': 'BAHARUNE=' + rune
-    }, timeout=20)
-    token_resp.raise_for_status()
-    token = token_resp.text
-except Exception as e:
-    fail(f"取得 CSRF Token 失敗（{type(e).__name__}: {e}）")
+def sign_in():
+    account = os.getenv("USER_ACCOUNT")
+    password = os.getenv("USER_PASSWORD")
+    if not account or not password:
+        raise SignInError("缺少帳號或密碼環境變數")
 
-# 3. 執行簽到並解析回應
-try:
-    signin_resp = requests.post('https://www.gamer.com.tw/ajax/signin.php', headers={
-        'User-Agent': 'Bahadroid (https://www.gamer.com.tw/)',
-        'Cookie': 'BAHARUNE=' + rune
-    }, data={
-        'action': 1,
-        'token': token
-    }, timeout=20)
-    signin_resp.raise_for_status()
+    session = requests.Session()
+
+    # 1. 登入
     try:
-        resp_json = signin_resp.json()
-    except ValueError as e:
-        raise RuntimeError(f"API 回傳非 JSON（HTTP {signin_resp.status_code}）") from e
-except Exception as e:
-    fail(f"簽到 API 請求異常（{type(e).__name__}: {e}）")
+        login_response = session.post(
+            LOGIN_URL,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Cookie": "ckAPP_VCODE=7045",
+            },
+            data={"uid": account, "passwd": password, "vcode": "7045"},
+            timeout=TIMEOUT,
+        )
+        login_response.raise_for_status()
+    except requests.RequestException as exc:
+        raise SignInError(
+            f"登入請求失敗（{type(exc).__name__}: {exc}）"
+        ) from exc
 
-# 4. 判斷簽到結果
-if 'error' in resp_json:
-    err_msg = resp_json['error'].get('message', '未知錯誤')
-    if "今天您已經簽到過了喔" in err_msg or "今日已簽到" in err_msg:
-        discord_msg = "✅ **巴哈姆特 今日已簽到**"
-        send_notification = False
-    else:
-        discord_msg = f"❌ **巴哈簽到失敗：{err_msg}**"
-        send_notification = True
-elif 'data' in resp_json:
-    days = resp_json['data'].get('days', 0)
-    discord_msg = f"✅ **巴哈姆特 簽到成功 (連續 {days} 天)**"
-    send_notification = True
-else:
-    discord_msg = "❌ **巴哈簽到失敗：API 回傳未知格式**"
-    send_notification = True
+    rune = login_response.cookies.get("BAHARUNE")
+    if not rune:
+        raise SignInError("登入失敗，未取得 BAHARUNE Cookie，請檢查帳密或驗證狀態")
 
-if send_notification:
-    send_discord_msg(discord_msg)
-print(discord_msg)
+    cookie = f"BAHARUNE={rune}"
 
-with open('README.md', 'w', encoding='utf-8') as f:
-    f.write(f"{datetime.now().strftime('%Y/%m/%d %H:%M:%S')}\n")
-    f.write(discord_msg + '\n\n')
-    f.write(json.dumps(resp_json, ensure_ascii=False, indent=4))
+    # 2. 取得 CSRF Token
+    try:
+        token_response = session.get(
+            TOKEN_URL,
+            headers=request_headers(cookie),
+            timeout=TIMEOUT,
+        )
+        token_response.raise_for_status()
+        token = token_response.text.strip()
+    except requests.RequestException as exc:
+        raise SignInError(
+            f"取得 CSRF Token 失敗（{type(exc).__name__}: {exc}）"
+        ) from exc
 
-if discord_msg.startswith("❌"):
-    sys.exit(1)
+    if not token:
+        raise SignInError("CSRF Token 回傳空白")
+
+    # 3. 執行簽到。非 JSON 回應不能視為成功。
+    try:
+        signin_response = session.post(
+            SIGNIN_URL,
+            headers=request_headers(cookie),
+            data={"action": 1, "token": token},
+            timeout=TIMEOUT,
+        )
+        signin_response.raise_for_status()
+    except requests.RequestException as exc:
+        raise SignInError(
+            f"簽到 API 請求失敗（{type(exc).__name__}: {exc}）"
+        ) from exc
+
+    try:
+        payload = signin_response.json()
+    except ValueError as exc:
+        content_type = signin_response.headers.get("Content-Type", "unknown")
+        raise SignInError(
+            f"簽到 API 回傳非 JSON（HTTP {signin_response.status_code}，"
+            f"Content-Type: {content_type}）"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise SignInError("簽到 API 回傳格式不是 JSON 物件")
+
+    # 4. 僅接受已知的成功或已簽到回應
+    error = payload.get("error")
+    if isinstance(error, dict):
+        message = str(error.get("message") or "未提供錯誤訊息")
+        if "今天您已經簽到過了喔" in message or "今日已簽到" in message:
+            return "already_signed", "✅ **巴哈姆特 今日已簽到**"
+
+        raise SignInError(f"巴哈姆特回報：{message}")
+
+    data = payload.get("data")
+    if isinstance(data, dict) and "days" in data:
+        days = data.get("days")
+        return "success", f"✅ **巴哈姆特 簽到成功 (連續 {days} 天)**"
+
+    raise SignInError("簽到 API 回傳未知格式，無法確認是否成功")
+
+
+def main():
+    try:
+        status, message = sign_in()
+    except SignInError as exc:
+        message = f"❌ **巴哈姆特簽到失敗：{exc}**"
+        print(message)
+        notified = send_discord(message)
+        if not notified:
+            print("❌ 失敗通知也未能送達 Discord，請查看 GitHub Actions 日誌", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        # 最後一道保護：任何未預期例外都要嘗試通知。
+        message = f"❌ **巴哈姆特簽到發生未預期錯誤：{type(exc).__name__}: {exc}**"
+        print(message)
+        notified = send_discord(message)
+        if not notified:
+            print("❌ 失敗通知也未能送達 Discord，請查看 GitHub Actions 日誌", file=sys.stderr)
+        return 1
+
+    print(message)
+
+    # 保留原本行為：已簽到不重複推播；新簽到成功則推播。
+    if status == "success":
+        if not send_discord(message):
+            print("⚠️ 簽到成功，但 Discord 通知未送達", file=sys.stderr)
+            return 2
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
