@@ -9,7 +9,7 @@ webhook_url = os.getenv('DISCORD_WEBHOOK')
 def send_discord_msg(content):
     if webhook_url:
         try:
-            requests.post(webhook_url, json={
+            response = requests.post(webhook_url, json={
                 "username": "簽到",
                 "embeds": [
                     {
@@ -22,7 +22,8 @@ def send_discord_msg(content):
                         "timestamp": datetime.utcnow().isoformat()
                     }
                 ]
-            })
+            }, timeout=15)
+            response.raise_for_status()
         except Exception as e:
             print(f"Discord 發送失敗: {e}")
 
@@ -34,7 +35,7 @@ resp = requests.post('https://api.gamer.com.tw/mobile_app/user/v3/do_login.php',
     'uid': account,
     'passwd': password,
     'vcode': '7045'
-})
+}, timeout=20)
 
 rune = resp.cookies.get('BAHARUNE')
 
@@ -46,19 +47,32 @@ if rune is None:
     sys.exit("Login Failed")
 
 # 2. 獲取 CSRF Token
-token = requests.get('https://www.gamer.com.tw/ajax/get_csrf_token.php', headers = {
+token_resp = requests.get('https://www.gamer.com.tw/ajax/get_csrf_token.php', headers = {
     'User-Agent': 'Bahadroid (https://www.gamer.com.tw/)',
     'Cookie': 'BAHARUNE=' + rune
-}).text
+}, timeout=20)
+token_resp.raise_for_status()
+token = token_resp.text
 
-# 3. 執行簽到
-resp_json = requests.post('https://www.gamer.com.tw/ajax/signin.php', headers = {
-    'User-Agent': 'Bahadroid (https://www.gamer.com.tw/)',
-    'Cookie': 'BAHARUNE=' + rune
-}, data = {
-    'action': 1,
-    'token': token
-}).json()
+# 3. 執行簽到，明確處理 HTTP 或非 JSON 回應
+try:
+    signin_resp = requests.post('https://www.gamer.com.tw/ajax/signin.php', headers = {
+        'User-Agent': 'Bahadroid (https://www.gamer.com.tw/)',
+        'Cookie': 'BAHARUNE=' + rune
+    }, data = {
+        'action': 1,
+        'token': token
+    }, timeout=20)
+    signin_resp.raise_for_status()
+    try:
+        resp_json = signin_resp.json()
+    except ValueError as e:
+        raise RuntimeError(f"簽到 API 回傳非 JSON（HTTP {signin_resp.status_code}）") from e
+except Exception as e:
+    msg = f"❌ **巴哈簽到失敗：簽到 API 請求異常（{type(e).__name__}: {e}）**"
+    send_discord_msg(msg)
+    print(msg)
+    sys.exit(1)
 
 # 4. 判斷訊息格式
 discord_msg = ""
