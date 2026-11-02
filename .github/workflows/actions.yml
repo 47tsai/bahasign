@@ -12,17 +12,17 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests
+          pip install requests pyotp
 
       - name: Run sign-in script
         id: sign_in
@@ -30,6 +30,7 @@ jobs:
         env:
           USER_ACCOUNT: ${{ secrets.ACCOUNT }}
           USER_PASSWORD: ${{ secrets.PASSWORD }}
+          TOTP_SECRET: ${{ secrets.TOTP_SECRET }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
           set -o pipefail
