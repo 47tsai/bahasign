@@ -44,6 +44,7 @@ jobs:
         run: |
           TIME=$(TZ='Asia/Taipei' date '+%Y-%m-%d %H:%M:%S')
           RESULT=$(grep -E '^(✅|❌)' result.txt 2>/dev/null | tail -n 1 || true)
+          DAYS=$(grep -E '^📅' result.txt 2>/dev/null | tail -n 1 || true)
 
           if echo "$RESULT" | grep -q '^✅'; then
             STATUS="$RESULT"
@@ -53,13 +54,20 @@ jobs:
             STATUS="⚠️ 執行異常，請查看 Actions 日誌"
           fi
 
+          if [ -z "$DAYS" ]; then
+            DAYS="📅 連續簽到：暫無資料"
+          fi
+
           cat > README.md <<EOF
           # 巴哈姆特自動簽到
 
-          | 帳號 | 上次執行時間 | 執行結果 |
-          | --- | --- | --- |
-          | 巴哈姆特帳號 | $TIME | $STATUS |
+          | 項目 | 狀態 |
+          | --- | --- |
+          | 上次執行時間 | $TIME |
+          | 執行結果 | $STATUS |
+          | 簽到天數 | $DAYS |
 
+          > 簽到天數由巴哈姆特 API 回傳，代表目前連續簽到天數。
           > 此頁面由 GitHub Actions 自動更新。
           EOF
 
