@@ -65,15 +65,53 @@ def send_discord(message, success):
         return False
 
 
+def signin_request(session, csrf_token, action):
+    response = session.post(
+        SIGNIN_URL,
+        headers={
+            "User-Agent": SIGNIN_USER_AGENT,
+            "X-Bahamut-Csrf-Token": csrf_token,
+        },
+        data={"action": str(action)},
+        timeout=TIMEOUT,
+    )
+    response.raise_for_status()
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        content_type = response.headers.get("Content-Type", "unknown")
+        raise SignInError(
+            f"簽到 API 回傳非 JSON（HTTP {response.status_code}，"
+            f"Content-Type: {content_type}）"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise SignInError("簽到 API 回傳格式不是 JSON 物件")
+    return payload
+
+
+def extract_days(payload):
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+
+    days = data.get("days")
+    if isinstance(days, int) and not isinstance(days, bool) and days >= 0:
+        return days
+    return None
+
+
 def sign_in():
     account = os.getenv("USER_ACCOUNT")
     password = os.getenv("USER_PASSWORD")
     if not account or not password:
         raise SignInError("缺少 USER_ACCOUNT 或 USER_PASSWORD")
 
-    # 沿用原本不需要 TOTP 的登入方式。
+    session = requests.Session()
+
     try:
-        login_response = requests.post(
+        login_response = session.post(
             LOGIN_URL,
             headers={
                 "User-Agent": LOGIN_USER_AGENT,
@@ -98,59 +136,46 @@ def sign_in():
             "登入失敗，未取得 BAHARUNE Cookie，請確認帳密或巴哈登入驗證機制"
         )
 
-    # 使用新版簽到 API，不呼叫舊版 get_csrf_token.php。
+    session.cookies.set("BAHARUNE", rune)
     csrf_token = secrets.token_hex(8)
+    session.cookies.set("ckBahamutCsrfToken", csrf_token)
+
     try:
-        response = requests.post(
-            SIGNIN_URL,
-            headers={
-                "User-Agent": SIGNIN_USER_AGENT,
-                "X-Bahamut-Csrf-Token": csrf_token,
-                "Cookie": f"BAHARUNE={rune}; ckBahamutCsrfToken={csrf_token}",
-            },
-            data={"action": 1},
-            timeout=TIMEOUT,
-        )
-        response.raise_for_status()
+        payload = signin_request(session, csrf_token, action=1)
     except requests.RequestException as exc:
         raise SignInError(
             f"簽到 API 請求失敗（{type(exc).__name__}: {exc}）"
         ) from exc
 
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        content_type = response.headers.get("Content-Type", "unknown")
-        raise SignInError(
-            f"簽到 API 回傳非 JSON（HTTP {response.status_code}，"
-            f"Content-Type: {content_type}）"
-        ) from exc
-
-    if not isinstance(payload, dict):
-        raise SignInError("簽到 API 回傳格式不是 JSON 物件")
-
     if "error" in payload:
         error = payload.get("error")
         if isinstance(error, dict):
-            message = str(error.get("message") or "未提供錯誤訊息")
+            error_message = str(error.get("message") or "未提供錯誤訊息")
         else:
-            message = str(error)
+            error_message = str(error)
 
-        if any(term in message for term in (
+        if any(term in error_message for term in (
             "今天您已經簽到過了喔",
             "今日已簽到",
             "已經簽到",
         )):
-            return "already_signed", "✅ **巴哈姆特 今日已簽到**"
+            # action=2 查詢當日簽到資料，取得目前連續簽到天數。
+            try:
+                status_payload = signin_request(session, csrf_token, action=2)
+                days = extract_days(status_payload)
+            except (requests.RequestException, SignInError) as exc:
+                print(f"⚠️ 無法查詢目前簽到天數：{exc}", file=sys.stderr)
+                days = None
+            return "already_signed", days
 
-        raise SignInError(f"巴哈姆特回報：{message}")
+        raise SignInError(f"巴哈姆特回報：{error_message}")
 
-    return "success", "✅ **巴哈姆特 簽到成功**"
+    return "success", extract_days(payload)
 
 
 def main():
     try:
-        status, message = sign_in()
+        status, days = sign_in()
     except Exception as exc:
         message = f"❌ **巴哈姆特簽到失敗：{type(exc).__name__}: {exc}**"
 
@@ -164,6 +189,18 @@ def main():
                 print("❌ 失敗通知未送達 Discord", file=sys.stderr)
         return 1
 
+    if status == "success":
+        label = "簽到成功"
+    else:
+        label = "今日已簽到"
+
+    if days is None:
+        message = f"✅ **巴哈姆特 {label}**"
+        print("📅 連續簽到：暫無資料")
+    else:
+        message = f"✅ **巴哈姆特 {label}｜連續第 {days} 天**"
+        print(f"📅 連續簽到：第 {days} 天")
+
     print(message)
 
     # 新簽到成功與「今日已簽到」都代表當日已完成。
@@ -174,7 +211,7 @@ def main():
 
     if not send_discord(message, success=True):
         print(
-            "❌ 簽到已成功，但成功通知未送達；保留重試機會",
+            "❌ 簽到已完成，但成功通知未送達；保留重試機會",
             file=sys.stderr,
         )
         return 2
